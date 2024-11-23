@@ -67,17 +67,18 @@ def train():
     sorted_indices = torch.argsort(difficulties)
     num_samples = len(sorted_indices)
     
-    # Create 5 stages with increasing difficulty
+    # Create 6 stages with increasing difficulty
     stage_indices = [
-        sorted_indices[:int(0.10 * num_samples)],                     # Easiest 10%
-        sorted_indices[int(0.10 * num_samples):int(0.25 * num_samples)],  # Next 15%
-        sorted_indices[int(0.25 * num_samples):int(0.45 * num_samples)],  # Next 20%
-        sorted_indices[int(0.45 * num_samples):int(0.70 * num_samples)],  # Next 25%
-        sorted_indices[int(0.70 * num_samples):]                      # Hardest 30%
+        sorted_indices[:int(0.08 * num_samples)],                     # Easiest 8%
+        sorted_indices[int(0.08 * num_samples):int(0.20 * num_samples)],  # Next 12%
+        sorted_indices[int(0.20 * num_samples):int(0.35 * num_samples)],  # Next 15%
+        sorted_indices[int(0.35 * num_samples):int(0.55 * num_samples)],  # Next 20%
+        sorted_indices[int(0.55 * num_samples):int(0.75 * num_samples)],  # Next 20%
+        sorted_indices[int(0.75 * num_samples):]                      # Hardest 25%
     ]
     
-    # Learning rates for each stage - more gradual decrease
-    learning_rates = [0.01, 0.008, 0.006, 0.004, 0.002]
+    # Learning rates for each stage - even more gradual decrease
+    learning_rates = [0.01, 0.008, 0.006, 0.004, 0.003, 0.002]
     
     print("\nStarting staged training...")
     model.train()
