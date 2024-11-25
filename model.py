@@ -80,47 +80,47 @@ class SimpleCNN(nn.Module):
                 init.constant_(m.bias, 0)
 
     def forward(self, x):
+        batch_size = x.size(0)
+        
         # First block
         x = self.conv1(x)                    # [B, 16, 28, 28]
-        x = self.bn1(x)
+        if batch_size > 1:
+            x = self.bn1(x)
         x = self.gelu(x)
         x = F.max_pool2d(x, 2, 2)           # [B, 16, 14, 14]
         x = self.dropout1(x)
         
-        # Second block with enhanced skip connection
-        identity = x
+        # Second block
         x = self.conv2(x)                    # [B, 32, 14, 14]
-        x = self.bn2(x)
+        if batch_size > 1:
+            x = self.bn2(x)
         x = self.gelu(x)
-        # Enhanced skip connection with learned scaling
-        identity = torch.cat([identity, identity], 1)  # [B, 32, 14, 14]
-        x = x + 0.8 * identity  # Scaled skip connection
         x = F.max_pool2d(x, 2, 2)           # [B, 32, 7, 7]
         x = self.dropout2(x)
         
-        # Third block with residual
-        identity = self.conv3(x)             # [B, 32, 7, 7]
-        x = self.bn3(identity)
+        # Third block
+        x = self.conv3(x)                    # [B, 32, 7, 7]
+        if batch_size > 1:
+            x = self.bn3(x)
         x = self.gelu(x)
         x = self.dropout2(x)
-        x = x + 0.5 * identity  # Scaled residual
         
-        # Fourth block with attention-like scaling
-        identity = x
+        # Fourth block
         x = self.conv4(x)                    # [B, 32, 7, 7]
-        x = self.bn4(x)
+        if batch_size > 1:
+            x = self.bn4(x)
         x = self.gelu(x)
-        scale = torch.sigmoid(x.mean(dim=[2, 3], keepdim=True))  # Channel attention
-        x = x * scale + identity  # Attention-scaled skip connection
         x = F.max_pool2d(x, 2, 2)           # [B, 32, 3, 3]
         x = self.dropout3(x)
         
-        x = self.global_pool(x)              # [B, 32, 1, 1]
-        x = x.view(-1, 32)                   # [B, 32]
-        x = self.layer_norm(x)
+        # Global pooling
+        x = F.adaptive_avg_pool2d(x, (1, 1))  # Use functional pooling for all cases
+        x = x.view(batch_size, -1)           # Flatten using batch size
         
+        # FC layers
         x = self.fc1(x)                      # [B, 20]
-        x = self.bn5(x)
+        if batch_size > 1:
+            x = self.bn5(x)
         x = self.gelu(x)
         x = self.dropout3(x)
         

@@ -5,21 +5,24 @@ from model import SimpleCNN
 
 @pytest.fixture
 def model():
-    return SimpleCNN()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return SimpleCNN().to(device)
 
 def test_parameter_count(model):
     total_params = sum(p.numel() for p in model.parameters())
     assert total_params < 25000, f"Model has {total_params} parameters, should be less than 25000"
 
 def test_input_shape(model):
-    test_input = torch.randn(1, 1, 28, 28)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    test_input = torch.randn(1, 1, 28, 28).to(device)
     try:
         output = model(test_input)
     except:
         pytest.fail("Model failed to process 28x28 input")
 
 def test_output_shape(model):
-    test_input = torch.randn(1, 1, 28, 28)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    test_input = torch.randn(1, 1, 28, 28).to(device)
     output = model(test_input)
     assert output.shape[1] == 10, f"Output should have 10 classes, got {output.shape[1]}"
 
