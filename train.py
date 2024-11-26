@@ -8,6 +8,52 @@ import os
 import math
 import random
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import numpy as np
+
+def show_augmented_images_ascii(dataset, num_images=3):
+    """Display original and augmented images in terminal using ASCII characters"""
+    # Characters to represent different pixel intensities (from dark to light)
+    ascii_chars = ' .:-=+*#%@'
+    
+    # Get random samples
+    indices = random.sample(range(len(dataset)), num_images)
+    
+    for idx in indices:
+        print("\n" + "="*80)
+        print(f"Image {idx}")
+        
+        # Original image
+        orig_img = dataset.data[idx].numpy()
+        print("\nOriginal:")
+        
+        # Convert to ASCII
+        for i in range(0, 28, 2):  # Skip every other row for better aspect ratio
+            line = ""
+            for j in range(0, 28, 2):  # Skip every other column
+                pixel = orig_img[i, j]
+                char_idx = int(pixel / 256 * len(ascii_chars))
+                line += ascii_chars[char_idx] * 2  # Double the character for better visibility
+            print(line)
+        
+        # Augmented image
+        aug_img, _ = dataset[idx]
+        aug_img = aug_img.squeeze().numpy()
+        print("\nAugmented:")
+        
+        # Normalize augmented image to 0-255 range for ASCII conversion
+        aug_img = (aug_img - aug_img.min()) * 255 / (aug_img.max() - aug_img.min())
+        
+        for i in range(0, 28, 2):
+            line = ""
+            for j in range(0, 28, 2):
+                pixel = aug_img[i, j]
+                char_idx = int(pixel / 256 * len(ascii_chars))
+                char_idx = max(0, min(char_idx, len(ascii_chars)-1))  # Ensure index is in bounds
+                line += ascii_chars[char_idx] * 2
+            print(line)
+        
+        print("="*80)
 
 def get_sample_difficulty(outputs, targets):
     # Calculate sample difficulty based on prediction confidence
@@ -15,16 +61,66 @@ def get_sample_difficulty(outputs, targets):
     correct_probs = probs[range(len(targets)), targets]
     return 1 - correct_probs  # Higher value = more difficult
 
+def save_augmented_samples(dataset, num_images=10, save_path='augmentation_samples'):
+    """Save original and augmented images as a grid"""
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+        
+    # Create a figure with subplots
+    fig, axes = plt.subplots(2, num_images, figsize=(20, 4))
+    
+    # Get random samples
+    indices = random.sample(range(len(dataset)), num_images)
+    
+    for i, idx in enumerate(indices):
+        # Original image
+        orig_img = dataset.data[idx].numpy()
+        
+        # Augmented image
+        aug_img, _ = dataset[idx]
+        aug_img = aug_img.squeeze().numpy()
+        
+        # Plot original
+        axes[0, i].imshow(orig_img, cmap='gray')
+        axes[0, i].axis('off')
+        if i == 0:
+            axes[0, i].set_title('Original')
+        
+        # Plot augmented
+        axes[1, i].imshow(aug_img, cmap='gray')
+        axes[1, i].axis('off')
+        if i == 0:
+            axes[1, i].set_title('Augmented')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_path, 'augmented_samples.png'))
+    plt.close()
+
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # Enhanced augmentation pipeline
     transform = transforms.Compose([
         transforms.ToTensor(),
+        transforms.RandomAffine(
+            degrees=15,  # Rotation
+            translate=(0.1, 0.1),  # Translation
+            scale=(0.9, 1.1),  # Scaling
+            shear=10  # Shearing
+        ),
+        transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+        transforms.RandomErasing(p=0.1, scale=(0.02, 0.1)),
         transforms.Normalize((0.1307,), (0.3081,))
     ])
     
     train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+    
+    # Show augmented samples
+    print("\nSaving augmented samples visualization...")
+    save_augmented_samples(train_dataset, num_images=10)
+    print("Augmented samples saved to 'augmentation_samples/augmented_samples.png'")
+    print("\nStarting training...")
     
     # Initialize model and optimizer
     model = SimpleCNN().to(device)
