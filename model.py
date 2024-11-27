@@ -11,12 +11,12 @@ class SimpleCNN(nn.Module):
         self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)    # Params: (3*3*1)*16 + 16 = 160
         self.bn1 = nn.BatchNorm2d(16)                              # Params: 16*2 = 32
         
-        # Second conv block - keep same
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)   # Params: (3*3*16)*32 + 32 = 4,640
-        self.bn2 = nn.BatchNorm2d(32)                              # Params: 32*2 = 64
+        # Second conv block - changed from 32 to 16 kernels
+        self.conv2 = nn.Conv2d(16, 16, kernel_size=3, padding=1)   # Params: (3*3*16)*16 + 16 = 2,320
+        self.bn2 = nn.BatchNorm2d(16)                              # Params: 16*2 = 32
         
-        # Third conv block - reduced size
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=3, padding=1)   # Params: (3*3*32)*32 + 32 = 9,248
+        # Third conv block - adjust input channels to match previous layer
+        self.conv3 = nn.Conv2d(16, 32, kernel_size=3, padding=1)   # Params: (3*3*16)*32 + 32 = 4,640
         self.bn3 = nn.BatchNorm2d(32)                              # Params: 32*2 = 64
         
         # Fourth conv block - reduced size
@@ -38,9 +38,9 @@ class SimpleCNN(nn.Module):
         
         self.gelu = nn.GELU()
         # Progressive dropout
-        self.dropout1 = nn.Dropout(0.1)   # Less dropout early
-        self.dropout2 = nn.Dropout(0.2)   # Medium dropout
-        self.dropout3 = nn.Dropout(0.3)   # More dropout late
+        self.dropout1 = nn.Dropout(0.02)   # 2% dropout early
+        self.dropout2 = nn.Dropout(0.05)   # 5% dropout medium
+        self.dropout3 = nn.Dropout(0.10)   # 10% dropout late
         
         self._initialize_weights()
         
@@ -91,11 +91,11 @@ class SimpleCNN(nn.Module):
         x = self.dropout1(x)
         
         # Second block
-        x = self.conv2(x)                    # [B, 32, 14, 14]
+        x = self.conv2(x)                    # [B, 16, 14, 14]
         if batch_size > 1:
             x = self.bn2(x)
         x = self.gelu(x)
-        x = F.max_pool2d(x, 2, 2)           # [B, 32, 7, 7]
+        x = F.max_pool2d(x, 2, 2)           # [B, 16, 7, 7]
         x = self.dropout2(x)
         
         # Third block
