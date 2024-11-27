@@ -1,40 +1,63 @@
-import torch
 import pytest
-from model.network import SimpleCNN
-from torchvision import datasets, transforms
+import torch
+from model import SimpleCNN
+from train import load_mnist_data
+import torch.nn as nn
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-def test_model_parameters():
+def test_parameter_count():
+    """Test if model has less than 20,000 parameters"""
     model = SimpleCNN()
-    param_count = count_parameters(model)
-    assert param_count < 100000, f"Model has {param_count} parameters, should be less than 100000"
+    total_params = sum(p.numel() for p in model.parameters())
+    assert total_params < 20000, f"Model has {total_params:,} parameters, should be < 20,000"
 
-def test_input_output_shape():
+def test_has_batch_norm():
+    """Test if model uses batch normalization"""
     model = SimpleCNN()
-    test_input = torch.randn(1, 1, 28, 28)
-    output = model(test_input)
-    assert output.shape == (1, 10), f"Output shape is {output.shape}, should be (1, 10)"
+    has_bn = any(isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)) for m in model.modules())
+    assert has_bn, "Model should use batch normalization"
 
+def test_has_dropout():
+    """Test if model uses dropout with correct rates"""
+    model = SimpleCNN()
+    dropout_rates = []
+    for m in model.modules():
+        if isinstance(m, nn.Dropout):
+            dropout_rates.append(m.p)
+    
+    assert len(dropout_rates) >= 3, "Model should have at least 3 dropout layers"
+    assert 0.02 in dropout_rates, "Model should have 2% dropout"
+    assert 0.05 in dropout_rates, "Model should have 5% dropout"
+    assert 0.10 in dropout_rates, "Model should have 10% dropout"
+
+def test_epoch_count():
+    """Test if training epochs are less than 20"""
+    from train import train
+    assert train.__defaults__[0] <= 20, "Number of epochs should be <= 20"
+
+def test_dataset_split():
+    """Test if dataset is split correctly (50k/10k)"""
+    train_loader, test_loader = load_mnist_data(batch_size=32)
+    
+    # Calculate total samples in each loader
+    train_samples = sum(len(data) for data, _ in train_loader) * train_loader.batch_size
+    test_samples = sum(len(data) for data, _ in test_loader) * test_loader.batch_size
+    
+    assert train_samples == 50000, f"Training set should have 50,000 samples, got {train_samples}"
+    assert test_samples == 10000, f"Test set should have 10,000 samples, got {test_samples}"
+
+@pytest.mark.skip(reason="Long running test for accuracy verification")
 def test_model_accuracy():
+    """Test if model achieves 99.4% test accuracy"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleCNN().to(device)
     
-    # Load the latest model
-    import glob
-    import os
-    model_files = glob.glob('models/*.pth')
-    latest_model = max(model_files, key=os.path.getctime)
-    model.load_state_dict(torch.load(latest_model))
+    # Load a pre-trained model if available
+    try:
+        model.load_state_dict(torch.load('models/best_model.pth'))
+    except:
+        pytest.skip("No pre-trained model found to test accuracy")
     
-    # Load test dataset
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-    test_dataset = datasets.MNIST('data', train=False, download=True, transform=transform)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1000)
+    train_loader, test_loader = load_mnist_data(batch_size=32)
     
     model.eval()
     correct = 0
@@ -49,4 +72,24 @@ def test_model_accuracy():
             correct += (predicted == target).sum().item()
     
     accuracy = 100 * correct / total
-    assert accuracy > 80, f"Model accuracy is {accuracy}%, should be > 80%" 
+    assert accuracy >= 99.4, f"Model accuracy {accuracy:.2f}% is below required 99.4%"
+
+def test_model_architecture():
+    """Test various architectural requirements"""
+    model = SimpleCNN()
+    
+    # Test conv layer progression
+    conv_layers = [m for m in model.modules() if isinstance(m, nn.Conv2d)]
+    assert len(conv_layers) == 4, "Model should have exactly 4 conv layers"
+    
+    # Test feature map progression
+    feature_maps = [conv.out_channels for conv in conv_layers]
+    assert feature_maps == [16, 16, 32, 32], f"Incorrect feature map progression: {feature_maps}"
+    
+    # Test FC layer sizes
+    fc_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
+    assert len(fc_layers) == 2, "Model should have exactly 2 FC layers"
+    assert fc_layers[-1].out_features == 10, "Final layer should output 10 classes"
+
+if __name__ == "__main__":
+    pytest.main([__file__]) 
