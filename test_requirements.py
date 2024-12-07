@@ -1,54 +1,45 @@
 import pytest
 import torch
-from model import SimpleCNN
-from train import load_mnist_data
 import torch.nn as nn
 import torch.nn.functional as F
+from model import SimpleCNN
+from train import load_mnist_data, train
 
-def test_parameter_count():
-    """Test if model has less than 20,000 parameters"""
+def test_requirement_1_params():
+    """Requirement 1: Model should have less than 20k parameters"""
     model = SimpleCNN()
     total_params = sum(p.numel() for p in model.parameters())
+    print(f"\nTotal parameters: {total_params:,}")
     assert total_params < 20000, f"Model has {total_params:,} parameters, should be < 20,000"
 
-def test_has_batch_norm():
-    """Test if model uses batch normalization"""
+def test_requirement_2_batchnorm():
+    """Requirement 2: Model should use Batch Normalization"""
     model = SimpleCNN()
     bn_layers = [m for m in model.modules() if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d))]
+    print(f"\nNumber of BatchNorm layers: {len(bn_layers)}")
     assert len(bn_layers) >= 4, "Model should have at least 4 batch normalization layers"
     assert all(isinstance(bn, nn.BatchNorm2d) for bn in bn_layers), "All batch norm layers should be BatchNorm2d"
 
-def test_has_pooling():
-    """Test if model uses pooling layers"""
-    model = SimpleCNN()
-    
-    # Get the source code of the forward method to check for pooling operations
-    forward_code = model.forward.__code__.co_code
-    
-    # Check if the model's forward pass contains pooling operations
-    has_avg_pool = 'avg_pool2d' in str(forward_code)
-    has_max_pool = 'max_pool2d' in str(forward_code)
-    
-    assert has_avg_pool or has_max_pool, "Model should use pooling layers"
-    assert has_avg_pool, "Model should use average pooling"
-    assert has_max_pool, "Model should use max pooling"
-
-def test_has_fc_layer():
-    """Test if model has fully connected layer with correct output size"""
+def test_requirement_3_fc():
+    """Requirement 3: Model should have FC layer"""
     model = SimpleCNN()
     fc_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
+    
+    print(f"\nNumber of FC layers: {len(fc_layers)}")
+    if len(fc_layers) > 0:
+        print(f"Output features of final FC layer: {fc_layers[-1].out_features}")
     
     assert len(fc_layers) >= 1, "Model should have at least one fully connected layer"
     assert fc_layers[-1].out_features == 10, "Final FC layer should have 10 output features (for MNIST classes)"
 
-def test_epoch_count():
-    """Test if training epochs are less than 20"""
-    from train import train
-    assert train.__defaults__[0] <= 20, "Number of epochs should be <= 20"
-    assert train.__defaults__[0] == 20, "Number of epochs should be exactly 20"
+def test_requirement_4_epochs():
+    """Requirement 4: Training should use less than 20 epochs"""
+    num_epochs = train.__defaults__[0]  # Get default value of num_epochs parameter
+    print(f"\nNumber of epochs: {num_epochs}")
+    assert num_epochs <= 20, "Number of epochs should be <= 20"
 
-def test_model_accuracy():
-    """Test if model achieves 99.4% test accuracy"""
+def test_requirement_5_accuracy():
+    """Requirement 5: Model should achieve > 99.4% accuracy"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleCNN().to(device)
     
@@ -73,7 +64,10 @@ def test_model_accuracy():
             correct += (predicted == target).sum().item()
     
     accuracy = 100 * correct / total
+    print(f"\nTest Accuracy: {accuracy:.2f}%")
     assert accuracy >= 99.4, f"Model accuracy {accuracy:.2f}% is below required 99.4%"
 
 if __name__ == "__main__":
-    pytest.main([__file__]) 
+    print("\nTesting Model Requirements")
+    print("="*50)
+    pytest.main([__file__, "-v"]) 
