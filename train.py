@@ -141,22 +141,11 @@ def train(num_epochs=20, patience=5, min_delta=0.001):
     best_accuracy = 0
     epochs_without_improvement = 0
     
-    # Load all data into memory for custom batching
-    initial_loader, test_loader = load_mnist_data(batch_size=32)
-    all_data = []
-    all_targets = []
-    for data, target in initial_loader:
-        all_data.append(data)
-        all_targets.append(target)
-    all_data = torch.cat(all_data)
-    all_targets = torch.cat(all_targets)
+    # Load data with DataLoader for random batching
+    train_loader, test_loader = load_mnist_data(batch_size=32)
     
-    # Fixed batch size for all epochs
-    batch_size = 32
-    half_batch = batch_size // 2
-    num_samples = len(all_data)
-    num_batches = (num_samples - 1) // batch_size + 1
-    steps_per_epoch = num_batches
+    # Calculate steps per epoch for scheduler
+    steps_per_epoch = len(train_loader)
     
     # Single scheduler for all epochs
     scheduler = optim.lr_scheduler.OneCycleLR(
@@ -172,7 +161,7 @@ def train(num_epochs=20, patience=5, min_delta=0.001):
     
     print(f"Training Strategy:")
     print("="*70)
-    print(f"Training for {num_epochs} epochs with batch_size={batch_size}")
+    print(f"Training for {num_epochs} epochs with batch_size=32")
     print(f"Total steps per epoch: {steps_per_epoch}")
     print("="*70 + "\n")
     
@@ -185,94 +174,31 @@ def train(num_epochs=20, patience=5, min_delta=0.001):
         
         print(f"\nEpoch {epoch + 1}")
         print("----------------------------------------")
-        print(f"Batch Size: {batch_size}")
+        print(f"Batch Size: 32")
         print(f"Learning Rate: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"Training mode: Random batches")
         
-        if epoch == 0:
-            print("Training mode: Random batches")
-            # First epoch: Random training
-            dataset = torch.utils.data.TensorDataset(all_data, all_targets)
-            current_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(device), target.to(device)
             
-            for batch_idx, (data, target) in enumerate(current_loader):
-                optimizer.zero_grad()
-                output = model(data)
-                loss = criterion(output, target)
-                loss.backward()
-                optimizer.step()
-                scheduler.step()
-                
-                _, predicted = torch.max(output.data, 1)
-                epoch_total += target.size(0)
-                epoch_correct += (predicted == target).sum().item()
-                epoch_loss += loss.item()
-                current_lr = scheduler.get_last_lr()[0]
-                
-                if batch_idx % 50 == 0:
-                    print(f'Batch {batch_idx}/{len(current_loader)}, '
-                          f'Loss: {loss.item():.4f}, '
-                          f'Accuracy: {100 * epoch_correct / epoch_total:.2f}%')
-                    print(f'Learning rate: {current_lr:.6f}')
-        
-        else:
-            print(f"Training mode: Mixed batches ({half_batch} hard + {half_batch} easy)")
-            # Epochs 1-5: Simple ordered pairs
-            hard_indices = sorted_indices[:num_samples//2]
-            easy_indices = sorted_indices[num_samples//2:]
+            optimizer.zero_grad()
+            output = model(data)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
             
-            # Flip indices to start with easier samples
-            hard_indices = torch.flip(hard_indices, [0])
-            easy_indices = torch.flip(easy_indices, [0])
+            _, predicted = torch.max(output.data, 1)
+            epoch_total += target.size(0)
+            epoch_correct += (predicted == target).sum().item()
+            epoch_loss += loss.item()
+            current_lr = scheduler.get_last_lr()[0]
             
-            for batch_idx in range(steps_per_epoch):
-                start_idx = batch_idx * half_batch
-                end_idx = start_idx + half_batch
-                
-                # Handle wrap-around for indices
-                if end_idx > len(hard_indices):
-                    continue
-                
-                batch_indices = torch.cat([hard_indices[start_idx:end_idx], 
-                                         easy_indices[start_idx:end_idx]])
-                batch_data = all_data[batch_indices]
-                batch_targets = all_targets[batch_indices]
-                
-                optimizer.zero_grad()
-                output = model(batch_data)
-                loss = criterion(output, batch_targets)
-                loss.backward()
-                optimizer.step()
-                scheduler.step()
-                
-                _, predicted = torch.max(output.data, 1)
-                epoch_total += batch_targets.size(0)
-                epoch_correct += (predicted == batch_targets).sum().item()
-                epoch_loss += loss.item()
-                current_lr = scheduler.get_last_lr()[0]
-                
-                if batch_idx % 50 == 0:
-                    print(f'Batch {batch_idx}/{steps_per_epoch}, '
-                          f'Loss: {loss.item():.4f}, '
-                          f'Accuracy: {100 * epoch_correct / epoch_total:.2f}%')
-                    print(f'Learning rate: {current_lr:.6f}')
-        
-        # Calculate confidences for next epoch (after training steps)
-        if epoch < num_epochs - 1:
-            print("\nCalculating confidence scores for next epoch...")
-            model.eval()
-            confidences = torch.zeros(len(all_data))
-            
-            with torch.no_grad():
-                for i in range(0, len(all_data), batch_size):
-                    batch_data = all_data[i:i+batch_size]
-                    outputs = model(batch_data)
-                    probs = F.softmax(outputs, dim=1)
-                    conf, _ = torch.max(probs, dim=1)
-                    confidences[i:i+batch_size] = conf.cpu()
-            
-            # Sort indices by confidence
-            sorted_indices = torch.argsort(confidences)
-            print("Sorting completed.")
+            if batch_idx % 50 == 0:
+                print(f'Batch {batch_idx}/{len(train_loader)}, '
+                      f'Loss: {loss.item():.4f}, '
+                      f'Accuracy: {100 * epoch_correct / epoch_total:.2f}%')
+                print(f'Learning rate: {current_lr:.6f}')
         
         # Evaluation
         model.eval()
@@ -322,7 +248,7 @@ def train(num_epochs=20, patience=5, min_delta=0.001):
     print("Training Summary:")
     print("="*100)
     print(f"Model Parameters: {num_params:,}")
-    print(f"Batch Size: {batch_size}")
+    print(f"Batch Size: 32")
     print(f"Initial LR: 0.015, Max LR: 0.02")
     print(f"Architecture: 8→16→32→32 channels")
     print("-"*100)
