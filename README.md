@@ -6,14 +6,14 @@ A PyTorch implementation of a CNN classifier for MNIST digits using staged train
 
 The model (`SimpleCNN`) is a convolutional neural network with:
 
-- 4 convolutional layers with progressive feature maps (16→16→32→32)
+- 3 convolutional layers with feature maps (16→8→16)
 - Batch normalization after each conv layer
 - GELU activation functions
 - Progressive dropout (2%→5%→10%)
 - Global average pooling
-- 2 fully connected layers (32→20→10)
+- 2 fully connected layers (16→16→10)
 
-Total parameters: ~17,534
+Total parameters: ~2,962
 
 ## Training Approach
 

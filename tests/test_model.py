@@ -34,18 +34,24 @@ def test_epoch_count():
     from train import train
     assert train.__defaults__[0] <= 20, "Number of epochs should be <= 20"
 
-def test_dataset_split():
-    """Test if dataset is split correctly (50k/10k)"""
-    train_loader, test_loader = load_mnist_data(batch_size=32)
+def test_training_dataset_size():
+    """Test if training dataset has exactly 50,000 samples"""
+    train_loader, _ = load_mnist_data(batch_size=32)
     
-    # Calculate total samples in each loader
-    train_samples = sum(len(data) for data, _ in train_loader) * train_loader.batch_size
-    test_samples = sum(len(data) for data, _ in test_loader) * test_loader.batch_size
+    # Calculate total samples in training loader
+    train_samples = len(train_loader.dataset)  # Direct dataset length
     
     assert train_samples == 50000, f"Training set should have 50,000 samples, got {train_samples}"
+
+def test_test_dataset_size():
+    """Test if test dataset has exactly 10,000 samples"""
+    _, test_loader = load_mnist_data(batch_size=32)
+    
+    # Calculate total samples in test loader
+    test_samples = len(test_loader.dataset)  # Direct dataset length
+    
     assert test_samples == 10000, f"Test set should have 10,000 samples, got {test_samples}"
 
-@pytest.mark.skip(reason="Long running test for accuracy verification")
 def test_model_accuracy():
     """Test if model achieves 99.4% test accuracy"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

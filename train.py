@@ -6,33 +6,46 @@ from model import SimpleCNN
 from datetime import datetime
 import os
 from torch.utils.data import random_split, DataLoader
+import math
+import numpy as np
+import torch.nn.functional as F
 
 def load_mnist_data(batch_size=32, train_size=50000, test_size=10000):
     """
-    Load and split MNIST dataset into train and test sets
-    Args:
-        batch_size: size of batches for dataloaders
-        train_size: number of samples for training (default 50000)
-        test_size: number of samples for testing (default 10000)
-    Returns:
-        train_loader, test_loader
+    Load and split MNIST dataset with moderate augmentation
     """
-    transform = transforms.Compose([
+    transform_train = transforms.Compose([
+        transforms.RandomRotation(10),  # Back to 10 degrees
+        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),  # Back to 0.1
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))  # MNIST mean and std
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+    
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
     ])
 
+    # Load full training dataset
     full_dataset = datasets.MNIST(
         root='./data', 
         train=True,
         download=True,
-        transform=transform
+        transform=transform_train
+    )
+    
+    test_dataset = datasets.MNIST(
+        root='./data',
+        train=False,
+        download=True,
+        transform=transform_test
     )
 
-    train_dataset, test_dataset = random_split(
+    # Split into train and test
+    train_dataset, _ = random_split(
         full_dataset, 
         [train_size, test_size],
-        generator=torch.Generator().manual_seed(42)  # For reproducibility
+        generator=torch.Generator().manual_seed(42)
     )
 
     train_loader = DataLoader(
@@ -53,117 +66,215 @@ def load_mnist_data(batch_size=32, train_size=50000, test_size=10000):
 
     return train_loader, test_loader
 
-def train(num_epochs=5, patience=5, min_delta=0.001):
-    """
-    Train the model with staged learning and early stopping
-    Each epoch runs through all stages before moving to next epoch
-    """
+def mixup_data(x, y, alpha=0.2):
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).cuda()
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def get_lr(epoch, stage_num, current_loss, prev_loss=None, total_epochs=5, total_stages=5):
+    # Base learning rate from epoch and stage
+    epoch_factor = 0.5 * (1 + math.cos(math.pi * epoch / total_epochs))
+    stage_factor = 1.0 - (stage_num - 1) / total_stages
+    base_lr = initial_lr * epoch_factor * stage_factor
+    
+    # Loss-based adjustment
+    if prev_loss is not None:
+        loss_change = (current_loss - prev_loss) / prev_loss
+        
+        if loss_change > 0.1:  # Loss increased significantly
+            loss_factor = 0.5
+        elif loss_change < -0.1:  # Loss decreased significantly
+            loss_factor = 1.2
+        else:
+            loss_factor = 1.0
+            
+        base_lr *= loss_factor
+    
+    return max(base_lr, 1e-5)
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
+        return focal_loss.mean()
+
+criterion = FocalLoss(gamma=2)  # Higher gamma gives more weight to hard examples
+
+def train(num_epochs=20, patience=5, min_delta=0.001):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    train_loader, test_loader = load_mnist_data(batch_size=32)
-    
+    # Initialize model and optimizer
     model = SimpleCNN().to(device)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    num_params = sum(p.numel() for p in model.parameters())
+    print("\nModel Configuration:")
+    print("="*70)
+    print(f"Total Parameters: {num_params:,}")
+    print(f"Architecture: 8→16→32→32 channels")
+    print(f"Batch Size: 32")
+    print(f"Initial LR: 0.015")
+    print(f"Max LR: 0.02")
+    print(f"Weight Decay: 0.0001")
+    print(f"Scheduler: OneCycleLR (pct_start=0.1, div_factor=10.0)")
+    print(f"Dropout: Early 2% → Mid 5% → Late 10%")
+    print("="*70 + "\n")
     
-    # Early stopping variables
-    best_accuracy = 0.0
+    optimizer = optim.AdamW(model.parameters(), lr=0.015, weight_decay=0.0001)
+    criterion = FocalLoss(gamma=2)
+    
+    # Store results for summary table
+    results = []
+    best_accuracy = 0
     epochs_without_improvement = 0
     
-    # Convert train_loader to list for easier splitting
+    # Load all data into memory for custom batching
+    initial_loader, test_loader = load_mnist_data(batch_size=32)
     all_data = []
     all_targets = []
-    print("\nPreparing data for staged training...")
-    
-    for data, target in train_loader:
+    for data, target in initial_loader:
         all_data.append(data)
         all_targets.append(target)
-    
     all_data = torch.cat(all_data)
     all_targets = torch.cat(all_targets)
-    num_samples = len(all_targets)
     
-    # Define stages with percentages and learning rates
-    stages = [
-        {"size": 0.10, "lr": 0.001},   # 10% easiest samples, highest lr
-        {"size": 0.15, "lr": 0.0008},  # 15% next samples
-        {"size": 0.20, "lr": 0.0006},  # 20% medium samples
-        {"size": 0.25, "lr": 0.0004},  # 25% harder samples
-        {"size": 0.30, "lr": 0.0002},  # 30% hardest samples, lowest lr
-    ]
+    # Fixed batch size for all epochs
+    batch_size = 32
+    half_batch = batch_size // 2
+    num_samples = len(all_data)
+    num_batches = (num_samples - 1) // batch_size + 1
+    steps_per_epoch = num_batches
     
-    # Prepare data loaders for all stages
-    stage_loaders = []
-    start_idx = 0
-    for stage_num, stage in enumerate(stages, 1):
-        size = int(stage["size"] * num_samples)
-        end_idx = start_idx + size
-        
-        stage_data = all_data[start_idx:end_idx]
-        stage_targets = all_targets[start_idx:end_idx]
-        stage_dataset = torch.utils.data.TensorDataset(stage_data, stage_targets)
-        stage_loader = torch.utils.data.DataLoader(
-            stage_dataset, 
-            batch_size=32, 
-            shuffle=True
-        )
-        stage_loaders.append({
-            "loader": stage_loader,
-            "lr": stage["size"],
-            "size": size
-        })
-        start_idx = end_idx
+    # Single scheduler for all epochs
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=0.02,
+        epochs=num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        pct_start=0.1,  # Quick warmup
+        div_factor=10.0,
+        final_div_factor=10.0,
+        anneal_strategy='cos'
+    )
     
-    # Training loop - epoch first, then stages
+    print(f"Training Strategy:")
+    print("="*70)
+    print(f"Training for {num_epochs} epochs with batch_size={batch_size}")
+    print(f"Total steps per epoch: {steps_per_epoch}")
+    print("="*70 + "\n")
+    
+    # Training loop
     for epoch in range(num_epochs):
-        print(f"\nEpoch {epoch + 1}/{num_epochs}")
+        model.train()
         epoch_loss = 0.0
         epoch_correct = 0
         epoch_total = 0
         
-        # Run through each stage for this epoch
-        for stage_num, (stage, stage_data) in enumerate(zip(stages, stage_loaders), 1):
-            print(f"\nStage {stage_num}:")
-            print(f"Samples: {stage_data['size']:,} ({stage['size']*100:.1f}%)")
-            print(f"Learning Rate: {stage['lr']}")
+        print(f"\nEpoch {epoch + 1}")
+        print("----------------------------------------")
+        print(f"Batch Size: {batch_size}")
+        print(f"Learning Rate: {scheduler.get_last_lr()[0]:.6f}")
+        
+        if epoch == 0:
+            print("Training mode: Random batches")
+            # First epoch: Random training
+            dataset = torch.utils.data.TensorDataset(all_data, all_targets)
+            current_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
             
-            # Optimizer for this stage
-            optimizer = optim.Adam(model.parameters(), lr=stage["lr"])
-            
-            # Training loop for this stage
-            model.train()
-            stage_loss = 0.0
-            stage_correct = 0
-            stage_total = 0
-            
-            for batch_idx, (data, target) in enumerate(stage_data["loader"]):
-                data, target = data.to(device), target.to(device)
+            for batch_idx, (data, target) in enumerate(current_loader):
                 optimizer.zero_grad()
                 output = model(data)
                 loss = criterion(output, target)
                 loss.backward()
-                
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
                 
                 _, predicted = torch.max(output.data, 1)
-                stage_total += target.size(0)
-                stage_correct += (predicted == target).sum().item()
-                stage_loss += loss.item()
+                epoch_total += target.size(0)
+                epoch_correct += (predicted == target).sum().item()
+                epoch_loss += loss.item()
+                current_lr = scheduler.get_last_lr()[0]
                 
                 if batch_idx % 50 == 0:
-                    accuracy = 100 * stage_correct / stage_total
-                    avg_loss = stage_loss / (batch_idx + 1)
-                    print(f'Epoch {epoch + 1}, Stage {stage_num}, Batch {batch_idx}/{len(stage_data["loader"])}, '
-                          f'Loss: {avg_loss:.4f}, '
-                          f'Accuracy: {accuracy:.2f}%')
-            
-            # Accumulate epoch statistics
-            epoch_loss += stage_loss
-            epoch_correct += stage_correct
-            epoch_total += stage_total
+                    print(f'Batch {batch_idx}/{len(current_loader)}, '
+                          f'Loss: {loss.item():.4f}, '
+                          f'Accuracy: {100 * epoch_correct / epoch_total:.2f}%')
+                    print(f'Learning rate: {current_lr:.6f}')
         
-        # Evaluation on test set after completing all stages
+        else:
+            print(f"Training mode: Mixed batches ({half_batch} hard + {half_batch} easy)")
+            # Epochs 1-5: Simple ordered pairs
+            hard_indices = sorted_indices[:num_samples//2]
+            easy_indices = sorted_indices[num_samples//2:]
+            
+            # Flip indices to start with easier samples
+            hard_indices = torch.flip(hard_indices, [0])
+            easy_indices = torch.flip(easy_indices, [0])
+            
+            for batch_idx in range(steps_per_epoch):
+                start_idx = batch_idx * half_batch
+                end_idx = start_idx + half_batch
+                
+                # Handle wrap-around for indices
+                if end_idx > len(hard_indices):
+                    continue
+                
+                batch_indices = torch.cat([hard_indices[start_idx:end_idx], 
+                                         easy_indices[start_idx:end_idx]])
+                batch_data = all_data[batch_indices]
+                batch_targets = all_targets[batch_indices]
+                
+                optimizer.zero_grad()
+                output = model(batch_data)
+                loss = criterion(output, batch_targets)
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                
+                _, predicted = torch.max(output.data, 1)
+                epoch_total += batch_targets.size(0)
+                epoch_correct += (predicted == batch_targets).sum().item()
+                epoch_loss += loss.item()
+                current_lr = scheduler.get_last_lr()[0]
+                
+                if batch_idx % 50 == 0:
+                    print(f'Batch {batch_idx}/{steps_per_epoch}, '
+                          f'Loss: {loss.item():.4f}, '
+                          f'Accuracy: {100 * epoch_correct / epoch_total:.2f}%')
+                    print(f'Learning rate: {current_lr:.6f}')
+        
+        # Calculate confidences for next epoch (after training steps)
+        if epoch < num_epochs - 1:
+            print("\nCalculating confidence scores for next epoch...")
+            model.eval()
+            confidences = torch.zeros(len(all_data))
+            
+            with torch.no_grad():
+                for i in range(0, len(all_data), batch_size):
+                    batch_data = all_data[i:i+batch_size]
+                    outputs = model(batch_data)
+                    probs = F.softmax(outputs, dim=1)
+                    conf, _ = torch.max(probs, dim=1)
+                    confidences[i:i+batch_size] = conf.cpu()
+            
+            # Sort indices by confidence
+            sorted_indices = torch.argsort(confidences)
+            print("Sorting completed.")
+        
+        # Evaluation
         model.eval()
         test_correct = 0
         test_total = 0
@@ -176,9 +287,21 @@ def train(num_epochs=5, patience=5, min_delta=0.001):
                 test_correct += (predicted == target).sum().item()
         
         test_accuracy = 100 * test_correct / test_total
+        train_accuracy = 100 * epoch_correct / epoch_total
+        
         print(f'\nEpoch {epoch + 1} Summary:')
-        print(f'Training Accuracy: {100 * epoch_correct / epoch_total:.2f}%')
+        print(f'Training Accuracy: {train_accuracy:.2f}%')
         print(f'Test Accuracy: {test_accuracy:.2f}%')
+        print(f'Average Loss: {epoch_loss / epoch_total:.4f}')
+        
+        # Store results for summary table
+        results.append({
+            'epoch': epoch + 1,
+            'train_acc': train_accuracy,
+            'test_acc': test_accuracy,
+            'loss': epoch_loss / epoch_total,
+            'lr': current_lr
+        })
         
         # Early stopping check
         if test_accuracy > best_accuracy + min_delta:
@@ -194,11 +317,28 @@ def train(num_epochs=5, patience=5, min_delta=0.001):
                 print(f'\nEarly stopping triggered after {epoch + 1} epochs')
                 break
     
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    torch.save(model.state_dict(), f'models/model_{timestamp}_acc{test_accuracy:.1f}.pth')
-    print(f"\nTraining completed:")
-    print(f"Final Test Accuracy: {test_accuracy:.2f}%")
+    # After training loop, print summary table
+    print("\n" + "="*100)
+    print("Training Summary:")
+    print("="*100)
+    print(f"Model Parameters: {num_params:,}")
+    print(f"Batch Size: {batch_size}")
+    print(f"Initial LR: 0.015, Max LR: 0.02")
+    print(f"Architecture: 8→16→32→32 channels")
+    print("-"*100)
+    print(f"{'Epoch':<10} {'Train Accuracy':<20} {'Test Accuracy':<20} {'Loss':<10} {'LR':<10}")
+    print("-"*100)
+    
+    for epoch_results in results:
+        print(f"{epoch_results['epoch']:<10} "
+              f"{epoch_results['train_acc']:>18.2f}% "
+              f"{epoch_results['test_acc']:>18.2f}% "
+              f"{epoch_results['loss']:>10.4f} "
+              f"{epoch_results['lr']:>10.6f}")
+    
+    print("="*100)
     print(f"Best Test Accuracy: {best_accuracy:.2f}%")
+    print("="*100 + "\n")
 
 if __name__ == "__main__":
     train(num_epochs=20, patience=5, min_delta=0.001) 
