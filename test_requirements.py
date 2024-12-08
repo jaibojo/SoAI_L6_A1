@@ -38,8 +38,23 @@ def test_requirement_4_epochs():
     print(f"\nNumber of epochs: {num_epochs}")
     assert num_epochs <= 20, "Number of epochs should be <= 20"
 
-def test_requirement_5_accuracy():
-    """Requirement 5: Model should achieve > 99.4% accuracy"""
+def test_requirement_5_dropout():
+    """Requirement 5: Model should use progressive dropout"""
+    model = SimpleCNN()
+    dropout_layers = [m for m in model.modules() if isinstance(m, nn.Dropout)]
+    dropout_rates = [layer.p for layer in dropout_layers]
+    
+    print(f"\nNumber of dropout layers: {len(dropout_layers)}")
+    print(f"Dropout rates: {[f'{rate:.1%}' for rate in dropout_rates]}")
+    
+    assert len(dropout_layers) >= 3, "Model should have at least 3 dropout layers"
+    assert 0.02 in dropout_rates, "Model should have 2% dropout"
+    assert 0.05 in dropout_rates, "Model should have 5% dropout"
+    assert 0.10 in dropout_rates, "Model should have 10% dropout"
+    assert sorted(dropout_rates) == [0.02, 0.05, 0.10], "Dropout rates should be progressive (2%, 5%, 10%)"
+
+def test_requirement_6_accuracy():
+    """Requirement 6: Model should achieve > 99.4% accuracy"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SimpleCNN().to(device)
     
